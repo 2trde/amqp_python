@@ -9,7 +9,8 @@ def log(str):
     print(time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime()) + ':  ' + str, flush = True)
 
 class AmqpEndpoint:
-    def __init__(self, exchange, request_topic, response_topic, on_receive, queue_name = None, amqp_connection = None, reconnect = True):
+    def __init__(self, exchange, request_topic, response_topic, on_receive,
+        queue_name = None, amqp_connection = None, reconnect = True, on_error = None):
         '''
             Provides an amqp endpoint that listens to request incoming from
             exchange under request_topic and sends responses to
@@ -21,6 +22,13 @@ class AmqpEndpoint:
             If you do not want the service to reconnect after the connection has
             been closed, set reconnect to False.
         '''
+        self.queue_name = queue_name
+        self.exchange = exchange
+        self.response_topic = response_topic
+        self.reconnect = reconnect
+        self.on_receive = on_receive
+        self.on_error = on_error
+        
         if amqp_connection is None:
             amqp_connection = os.environ.get('AMQP_CONNECTION')
         if queue_name is None:
@@ -30,39 +38,39 @@ class AmqpEndpoint:
         self.connection = pika.BlockingConnection(self.parameters)
         self.channel = self.connection.channel()
         
-        self.queue_name = queue_name
-        self.channel.queue_declare(queue = queue_name, durable=True)
-        self.channel.exchange_declare(exchange = exchange, exchange_type='topic')
-        self.channel.queue_bind(queue_name, exchange, request_topic)
-        self.exchange = exchange
-        self.response_topic = response_topic
-        
-        self.reconnect = reconnect
-        self.on_receive = on_receive
+        self.channel.queue_declare(queue = self.queue_name, durable=True)
+        self.channel.exchange_declare(exchange = self.exchange, exchange_type='topic')
+        self.channel.queue_bind(self.queue_name, self.exchange, request_topic)
+        self.consumer_tag = self.channel.basic_consume(consumer_callback = self._consume, queue = self.queue_name)
     
     def run(self):
-        log('Service has been started, listening on queue {}.'.format(self.queue_name))
-        try:
-            for method_frame, _, body in self.channel.consume(self.queue_name):
-                log('Received a new message.')
-                self.channel.basic_ack(method_frame.delivery_tag)
-                response = self.process_request(body)
-                if response is not None:
-                    # delivery_mode = 2 -> persistent
-                    self.channel.basic_publish(self.exchange, self.response_topic, response, pika.BasicProperties(content_type='text/json', delivery_mode=2))
-                    log('Sent response to exchange {}, topic {}.'.format(self.exchange, self.response_topic))
-        except pika.exceptions.ConnectionClosed:
+        while True:
+            try:
+                log('Service has been started, listening on queue {}.'.format(self.queue_name))
+                self.channel.start_consuming()
+                # this is blocking
+            except pika.exceptions.ConnectionClosed:
+                pass
             if self.reconnect:
                 log('The connection has been closed, reconnecting ...')
                 self.connection = pika.BlockingConnection(self.parameters)
                 self.channel = self.connection.channel()
-                self.run()
             else:
                 log('The connection has been closed, shutting down gracefully ...')
-                channel.cancel()
+                channel.basic_cancel(self.consumer_tag)
                 connection.close()
+                break
     
-    def process_request(self, body):
+    def _consume(self, channel, method, properties, body):
+        log('Received a new message.')
+        self.channel.basic_ack(method.delivery_tag)
+        response = self._process_request(body)
+        if response is not None:
+            # delivery_mode = 2 -> persistent
+            self.channel.basic_publish(self.exchange, self.response_topic, response, pika.BasicProperties(content_type='text/json', delivery_mode=2))
+            log('Sent response to exchange {}, topic {}.'.format(self.exchange, self.response_topic))
+    
+    def _process_request(self, body):
         try:
             start_time = time.time()
             request = json.loads(body.decode('utf-8'))
@@ -73,5 +81,9 @@ class AmqpEndpoint:
         except Exception as error:
             log('Unexpected error: {}'.format(error))
             print(traceback.format_exc())
+        try:
+            log('Attempting to send on_error response instead ...')
+            return json.dumps(self.on_error(request))
+        except:
             log('Failed to process request.')
             return None
