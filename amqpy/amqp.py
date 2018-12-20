@@ -22,44 +22,46 @@ class AmqpEndpoint:
             If you do not want the service to reconnect after the connection has
             been closed, set reconnect to False.
         '''
-        self.queue_name = queue_name
-        self.exchange = exchange
-        self.response_topic = response_topic
-        self.reconnect = reconnect
-        self.on_receive = on_receive
-        self.on_error = on_error
-        
         if amqp_connection is None:
             amqp_connection = os.environ.get('AMQP_CONNECTION')
         if queue_name is None:
             queue_name = '.'.join([exchange, request_topic])
         
+        self.queue_name = queue_name
+        self.exchange = exchange
+        self.request_topic = request_topic
+        self.response_topic = response_topic
+        self.reconnect = reconnect
+        self.on_receive = on_receive
+        self.on_error = on_error
         self.parameters = pika.URLParameters(amqp_connection)
-        self.connection = pika.BlockingConnection(self.parameters)
-        self.channel = self.connection.channel()
-        
-        self.channel.queue_declare(queue = self.queue_name, durable=True)
-        self.channel.exchange_declare(exchange = self.exchange, exchange_type='topic')
-        self.channel.queue_bind(self.queue_name, self.exchange, request_topic)
-        self.consumer_tag = self.channel.basic_consume(consumer_callback = self._consume, queue = self.queue_name)
     
     def run(self):
         while True:
             try:
+                self._setup()
                 log('Service has been started, listening on queue {}.'.format(self.queue_name))
                 self.channel.start_consuming()
-                # this is blocking
+                # this is blocking until all consumers are canceled
+                log('The consumer has been canceled, closing the connection ...')
+                self.connection.close()
             except pika.exceptions.ConnectionClosed:
-                pass
+                log('The connection has been closed.')
+            
             if self.reconnect:
-                log('The connection has been closed, reconnecting ...')
-                self.connection = pika.BlockingConnection(self.parameters)
-                self.channel = self.connection.channel()
+                time.sleep(1)
+                log('Reconnecting ...')
             else:
-                log('The connection has been closed, shutting down gracefully ...')
-                channel.basic_cancel(self.consumer_tag)
-                connection.close()
+                log('Shutting down.')
                 break
+    
+    def _setup(self):
+        self.connection = pika.BlockingConnection(self.parameters)
+        self.channel = self.connection.channel()
+        self.channel.queue_declare(queue = self.queue_name, durable=True)
+        self.channel.exchange_declare(exchange = self.exchange, exchange_type='topic')
+        self.channel.queue_bind(self.queue_name, self.exchange, self.request_topic)
+        self.consumer_tag = self.channel.basic_consume(consumer_callback = self._consume, queue = self.queue_name)
     
     def _consume(self, channel, method, properties, body):
         log('Received a new message.')
