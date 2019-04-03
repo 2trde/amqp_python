@@ -61,7 +61,7 @@ class AmqpEndpoint:
         self.channel.queue_declare(queue = self.queue_name, durable=True)
         self.channel.exchange_declare(exchange = self.exchange, exchange_type='topic')
         self.channel.queue_bind(self.queue_name, self.exchange, self.request_topic)
-        self.consumer_tag = self.channel.basic_consume(consumer_callback = self._consume, queue = self.queue_name)
+        self.consumer_tag = self.channel.basic_consume(queue = self.queue_name, on_message_callback = self._consume)
     
     def _consume(self, channel, method, properties, body):
         log('Received a new message.')

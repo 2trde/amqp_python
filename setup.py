@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name='amqpy',
-      version='0.3',
+      version='0.4',
       description='Simple amqp endpoint for python, based on pika',
       url='http://github.com/2trde/amqp_dsl',
       author='Daniel Kirch',
